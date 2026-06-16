@@ -115,6 +115,10 @@ class AscendSFAMetadata:
     attn_state: AscendAttentionState = AscendAttentionState.ChunkedPrefill
     dsa_cp_context: Optional[DSACPContext] = None
     reshape_cache_event: torch.npu.Event = None
+    block_size: int = 0
+    group_len: torch.Tensor | None = None
+    group_key_idx: torch.Tensor | None = None
+    group_key_cache_idx: torch.Tensor | None = None
 
 
 M = TypeVar("M", bound=AscendSFAMetadata)
@@ -192,6 +196,9 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
 
         block_table = common_attn_metadata.block_table_tensor[:num_reqs]
         slot_mapping = common_attn_metadata.slot_mapping[:num_input_tokens]
+        block_size = 128
+        if get_ascend_config().c8_enable_reshape_optim:
+            slot_mapping_cpu = common_attn_metadata.swa_slot_mapping[:num_input_tokens]
         input_positions = common_attn_metadata.positions[:
                                                          num_input_tokens].long(
                                                          )
@@ -279,7 +286,13 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
                 actual_seq_lengths_query=actual_seq_lengths_query,
                 actual_seq_lengths_key=actual_seq_lengths_key,
             )
-
+        if get_ascend_config().c8_enable_reshape_optim:
+            slot_mapping_list = slot_mapping_cpu.tolist()
+            group_len, group_key_idx, group_key_cache_idx = torch.ops._C_ascend.store_kv_block_pre(
+                slot_mapping, slot_mapping_list, block_size
+            )
+        else:
+            group_len, group_key_idx, group_key_cache_idx = None, None, None
         return self.metadata_cls(  # type: ignore
             num_input_tokens=common_attn_metadata.num_input_tokens,
             num_actual_tokens=num_actual_tokens,
@@ -293,7 +306,12 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
             block_tables=block_table,
             sin=sin[:num_input_tokens],
             cos=cos[:num_input_tokens],
-            dsa_cp_context=dsa_cp_context)
+            dsa_cp_context=dsa_cp_context,
+            block_size=block_size,
+            group_len=group_len,
+            group_key_idx=group_key_idx,
+            group_key_cache_idx=group_key_cache_idx
+            )
 
     def build_for_graph_capture(
         self,
@@ -849,14 +867,41 @@ class AscendSFAImpl(MLAAttentionImpl):
                     ],
                                                               dim=-1)
                     slot_mapping = attn_metadata.slot_mapping.view(-1, 1)
-                    torch_npu.npu_scatter_nd_update_(
-                        kv_cache[0].view(-1, k_nope.shape[-1]), slot_mapping,
-                        k_nope)
-                    torch_npu.npu_scatter_nd_update_(
-                        kv_cache[1].view(-1, k_pe.shape[-1]), slot_mapping,
-                        k_pe)
-
-            if kv_cache is not None:
+                    if  self.is_kv_producer and get_ascend_config().c8_enable_reshape_optim:
+                        torch.ops._C_ascend.store_kv_block(
+                                    k_nope.view(-1, k_nope.shape[-1]),
+                                    kv_cache[0],
+                                    attn_metadata.group_len,
+                                    attn_metadata.group_key_idx,
+                                    attn_metadata.group_key_cache_idx,
+                                    attn_metadata.block_size,
+                                )
+                        torch.ops._C_ascend.store_kv_block(
+                                    k_pe.view(-1, k_pe.shape[-1]),
+                                    kv_cache[1],
+                                    attn_metadata.group_len,
+                                    attn_metadata.group_key_idx,
+                                    attn_metadata.group_key_cache_idx,
+                                    attn_metadata.block_size,
+                                )
+                    else:
+                        torch_npu.npu_scatter_nd_update_(
+                            kv_cache[0].view(-1, k_nope.shape[-1]), slot_mapping,
+                            k_nope)
+                        torch_npu.npu_scatter_nd_update_(
+                            kv_cache[1].view(-1, k_pe.shape[-1]), slot_mapping,
+                            k_pe)
+                    
+            if kv_cache is not None and self.is_kv_producer and get_ascend_config().c8_enable_reshape_optim:
+                            torch.ops._C_ascend.store_kv_block(
+                                k.view(-1, k.shape[-1]),
+                                kv_cache[2],
+                                attn_metadata.group_len,
+                                attn_metadata.group_key_idx,
+                                attn_metadata.group_key_cache_idx,
+                                attn_metadata.block_size,
+                            )
+            else:
                 torch_npu.npu_scatter_nd_update_(
                     kv_cache[2].view(-1, k.shape[-1]),
                     attn_metadata.slot_mapping.view(-1, 1),
@@ -993,7 +1038,17 @@ class AscendSFAImpl(MLAAttentionImpl):
         if kv_cache is not None:
             if self.is_kv_producer:
                 attn_metadata.reshape_cache_event = torch.npu.Event()
-            torch_npu.npu_scatter_nd_update_(kv_cache[2].view(-1, k.shape[-1]),
+            if  self.is_kv_producer and get_ascend_config().c8_enable_reshape_optim:
+                torch.ops._C_ascend.store_kv_block(
+                        k.view(-1, k.shape[-1]),
+                        kv_cache[2],
+                        attn_metadata.group_len,
+                        attn_metadata.group_key_idx,
+                        attn_metadata.group_key_cache_idx,
+                        attn_metadata.block_size,
+                    )
+            else:
+                torch_npu.npu_scatter_nd_update_(kv_cache[2].view(-1, k.shape[-1]),
                                              attn_metadata.slot_mapping.view(
                                                  -1, 1),
                                              k.view(-1,

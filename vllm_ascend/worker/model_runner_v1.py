@@ -1136,6 +1136,7 @@ class NPUModelRunner(GPUModelRunner):
                     # TODO: change this to the right block table for linear attn
                     block_table_tensor=blk_table_tensor[:num_reqs],
                     slot_mapping=slot_mapping,
+                    slot_mapping_cpu=self.swa_slot_mapping,
                     state_ids=state_ids,
                     swa_slot_mapping=self.swa_slot_mapping.
                     gpu[:total_num_scheduled_tokens],

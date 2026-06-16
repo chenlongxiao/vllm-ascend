@@ -131,6 +131,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]]; then
 
         "rms_norm_dynamic_quant"
         "inplace_partial_rotary_mul"
+        "reshape_and_cache_by_group"
     )
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
     SOC_ARG="ascend910_93"
@@ -164,6 +165,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_95 ]]; then
         "hc_pre_sinkhorn"
         "hc_pre_inv_rms"
         "hc_post"
+        "reshape_and_cache_by_group"
     )
 
 

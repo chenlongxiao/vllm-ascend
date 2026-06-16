@@ -132,6 +132,7 @@ class AscendConfig:
             self, vllm_config)
         self.enable_npugraph_ex = additional_config.get(
             "enable_npugraph_ex", False)
+        self.c8_enable_reshape_optim = self.enable_sparse_c8 and additional_config.get("c8_enable_reshape_optim", False)
         # We find that _npu_paged_attention still performs better than
         # npu_fused_infer_attention_score in some cases. We allow to execute
         # _npu_paged_attention in this cases. This should be removed once
