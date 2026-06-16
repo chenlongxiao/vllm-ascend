@@ -29,7 +29,7 @@ import vllm_ascend.ops.vocab_parallel_embedding  # noqa
 from vllm_ascend.ops.activation import AscendQuickGELU, AscendSiluAndMul
 from vllm_ascend.ops.rotary_embedding import (
     AscendDeepseekScalingRotaryEmbedding, AscendRotaryEmbedding)
-
+import vllm_ascend.ops.triton.linearnorm.split_qkv_rmsnorm_mrope
 
 class dummyFusionOp:
     default = None
